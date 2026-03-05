@@ -6,7 +6,7 @@ Install:
     pip install dash plotly pandas
 
 Run:
-    python portfolio_tool_v2.py  →  http://127.0.0.1:8050
+    python portfolio_tool_v2.py  →  http://127.0.0.1:8060
 """
 
 import math
@@ -1116,4 +1116,4 @@ def cb_add_pipe(_, pipe, nid, name, dtype, sector,
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+    app.run(debug=True, port=8060)
