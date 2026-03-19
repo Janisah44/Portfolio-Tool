@@ -138,16 +138,16 @@ DEFAULT_CONFIG = {
     # Legal / mandate limits
     "limit_single_deal_pct":    5.0,    # max % NAV in any single deal
     "limit_single_manager_pct": 20.0,   # max % NAV with any single GP/manager
-    "limit_coinvest_max_pct":   40.0,   # max % NAV in co-investments
+    "limit_coinvest_max_pct":   50.0,   # max % NAV in co-investments
     "limit_single_sector_pct":  35.0,   # max % NAV in any single sector
     "limit_single_region_pct":  60.0,   # max % NAV in any single region
     "limit_unfunded_pct":       25.0,   # max unfunded as % of fund size
     "min_deals":                10,     # minimum number of portfolio positions
     # Additional investment restrictions
-    "limit_leverage_pct":       0.2,    # max leverage as % NAV (0 = no leverage allowed)
-    "Over_Commitment_pct"       1.2
-    "limit_primaries_pct":      10.0,   # max % NAV in primary fund investments
-    "limit_non_secondary_pct":  40.0,   # max % NAV in non-secondary strategies
+    "limit_leverage_pct":       20.0,    # max leverage as % NAV (0 = no leverage allowed)
+    "Overcommitment_pct":      120.0,    # max overcommitment as % NAV (1= no overcommitment allowed)
+    "limit_primaries_pct":      5.0,   # max % NAV in primary fund investments
+    "limit_non_secondary_pct":  50.0,   # max % NAV in non-secondary strategies
     "limit_non_na_europe_pct":  25.0,   # max % NAV outside North America & Europe
     "limit_single_vintage_pct": 35.0,   # max % NAV in any single vintage year
     # Return targets

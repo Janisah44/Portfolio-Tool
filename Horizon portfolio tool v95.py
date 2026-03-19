@@ -1,11 +1,6 @@
 """
-HORIZON PORTFOLIO TOOL v75
+HORIZON PORTFOLIO TOOL v95
 PE Secondaries & Co-Investment LP Management
-
-Same features as v74, Credit Portfolio Tool v9 style:
-  - Flat dcc.Tabs, no Bootstrap sidebar
-  - Inline forms, card()/kpi()/_field() helpers
-  - No Bootstrap dependency
 
 Tabs:
   📂 Portfolio       add/edit/delete deals, KPIs, charts
@@ -35,7 +30,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ── Persistence ───────────────────────────────────────────────────────────────
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "horizon_v75_data.pkl")
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "horizon_v93_data.pkl")
 
 def save_data(portfolio, pipeline, placeholders, config, next_id):
     try:
@@ -135,21 +130,26 @@ DEFAULT_CONFIG = {
     "target_europe_pct":    35.0,
     "target_asia_pct":      10.0,
     "target_global_pct":    5.0,
-    # Legal / mandate limits
-    "limit_single_deal_pct":    5.0,    # max % NAV in any single deal
-    "limit_single_manager_pct": 20.0,   # max % NAV with any single GP/manager
-    "limit_coinvest_max_pct":   40.0,   # max % NAV in co-investments
-    "limit_single_sector_pct":  35.0,   # max % NAV in any single sector
-    "limit_single_region_pct":  60.0,   # max % NAV in any single region
-    "limit_unfunded_pct":       25.0,   # max unfunded as % of fund size
-    "min_deals":                10,     # minimum number of portfolio positions
-    # Additional investment restrictions
-    "limit_leverage_pct":       0.2,    # max leverage as % NAV (0 = no leverage allowed)
-    "Over_Commitment_pct"       1.2
-    "limit_primaries_pct":      10.0,   # max % NAV in primary fund investments
-    "limit_non_secondary_pct":  40.0,   # max % NAV in non-secondary strategies
-    "limit_non_na_europe_pct":  25.0,   # max % NAV outside North America & Europe
-    "limit_single_vintage_pct": 35.0,   # max % NAV in any single vintage year
+    # ── Flexible restriction lists (editable in Settings) ────────────────────
+    # Each entry: {label, metric_key, limit, higher_is_bad, fmt}
+    # metric_key maps to computed actuals in tab_overview
+    "legal_restrictions": [
+        {"label": "Single Manager Concentration",  "metric_key": "max_manager_pct",   "limit": 20.0,  "higher_is_bad": True, "fmt": "%"},
+        {"label": "Single Asset Concentration",    "metric_key": "max_deal_pct",       "limit": 10.0,  "higher_is_bad": True, "fmt": "%"},
+        {"label": "Non-North America Exposure",    "metric_key": "non_na_pct",         "limit": 50.0,  "higher_is_bad": True, "fmt": "%"},
+        {"label": "Non-Secondary Allocation",      "metric_key": "non_sec_pct",        "limit": 50.0,  "higher_is_bad": True, "fmt": "%"},
+        {"label": "Listed Company Exposure",       "metric_key": "listed_pct",         "limit": 10.0,  "higher_is_bad": True, "fmt": "%"},
+        {"label": "Leverage (% NAV)",              "metric_key": "leverage_pct",       "limit": 20.0,  "higher_is_bad": True, "fmt": "%"},
+        {"label": "Overcommitment (% NAV)",        "metric_key": "overcommitment_pct", "limit": 120.0, "higher_is_bad": True, "fmt": "%"},
+    ],
+    "investment_targets": [
+        {"label": "Single Vintage Year",           "metric_key": "max_vintage_pct",   "limit": 35.0, "higher_is_bad": True,  "fmt": "%"},
+        {"label": "Co-Investment Allocation",      "metric_key": "ci_pct",            "limit": 40.0, "higher_is_bad": True,  "fmt": "%"},
+        {"label": "Primary Fund Investments",      "metric_key": "primary_pct",       "limit": 10.0, "higher_is_bad": True,  "fmt": "%"},
+        {"label": "Single Sector Concentration",   "metric_key": "max_sector_pct",    "limit": 35.0, "higher_is_bad": True,  "fmt": "%"},
+        {"label": "Minimum # Positions",           "metric_key": "num_deals",         "limit": 10.0, "higher_is_bad": False, "fmt": "n"},
+        {"label": "Secondaries Allocation",        "metric_key": "sec_pct",           "limit": 50.0, "higher_is_bad": False, "fmt": "%"},
+    ],
     # Return targets
     "target_irr_secondary": 15.0,      # target gross IRR for secondaries (%)
     "target_irr_coinvest":  20.0,      # target gross IRR for co-investments (%)
@@ -209,9 +209,19 @@ loaded            = load_data()
 INITIAL_PORT      = loaded.get("portfolio",    SEED_PORTFOLIO)    if loaded else SEED_PORTFOLIO
 INITIAL_PIPE      = loaded.get("pipeline",     SEED_PIPELINE)     if loaded else SEED_PIPELINE
 INITIAL_PH        = loaded.get("placeholders", SEED_PLACEHOLDERS) if loaded else SEED_PLACEHOLDERS
-INITIAL_CFG       = loaded.get("config",       DEFAULT_CONFIG)    if loaded else DEFAULT_CONFIG
 INITIAL_NEXT_ID   = loaded.get("next_id",      50)                if loaded else 50
 SAVED_AT          = loaded.get("saved_at",     "Seed data")       if loaded else "Seed data"
+
+# Always start from a full DEFAULT_CONFIG base, then overlay saved values.
+# This ensures new keys (like legal_restrictions / investment_targets) are
+# never stale from an older pickle that pre-dates this version.
+_saved_cfg = loaded.get("config", {}) if loaded else {}
+INITIAL_CFG = {**DEFAULT_CONFIG, **_saved_cfg,
+               # Always reset restriction lists to current defaults unless the
+               # user has already saved customised versions via the Settings tab.
+               "legal_restrictions":  _saved_cfg.get("legal_restrictions",  DEFAULT_CONFIG["legal_restrictions"]),
+               "investment_targets":  _saved_cfg.get("investment_targets",  DEFAULT_CONFIG["investment_targets"]),
+               }
 
 # ── Style helpers ─────────────────────────────────────────────────────────────
 INP = dict(background=C["surface"], border=f"1px solid {C['border2']}",
@@ -379,6 +389,9 @@ app.layout = html.Div([
     dcc.Store(id="edit-idx",         data=None),
     dcc.Store(id="edit-pipe-idx",    data=None),
     dcc.Store(id="edit-ph-idx",      data=None),
+    dcc.Store(id="port-selected-idx",  data=None),   # persists portfolio row selection across re-renders
+    dcc.Store(id="pipe-selected-idx",  data=None),   # persists pipeline row selection across re-renders
+    dcc.Store(id="ph-selected-idx",    data=None),   # persists deployment plan row selection across re-renders
     dcc.Store(id="populate-port-trigger", data=None),
     dcc.Store(id="populate-pipe-trigger", data=None),
     dcc.Store(id="fund-cf-store",    data=None),   # uploaded Fund Level CF Excel
@@ -446,15 +459,16 @@ app.layout = html.Div([
     Input("hdr-fund-size","value"), Input("hdr-dry-powder","value"),
     Input("hdr-twr","value"), Input("hdr-fee","value"),
     State("cfg-store","data"),
+    prevent_initial_call=True,
 )
 def sync_header(fund_size, dry_powder, twr, fee, config):
+    # Only update the 4 header-owned keys — never touch other config keys
+    # (avoids clobbering legal_restrictions, investment_targets, etc.)
     cfg = dict(config or DEFAULT_CONFIG)
-    cfg.update({
-        "fund_size":      float(fund_size    or cfg.get("fund_size",1000)),
-        "dry_powder":     float(dry_powder   or cfg.get("dry_powder",300)),
-        "target_net_twr": float(twr          or cfg.get("target_net_twr",0.13)*100)/100,
-        "management_fee": float(fee          or cfg.get("management_fee",0.0125)*100)/100,
-    })
+    if fund_size  is not None: cfg["fund_size"]      = float(fund_size)
+    if dry_powder is not None: cfg["dry_powder"]     = float(dry_powder)
+    if twr        is not None: cfg["target_net_twr"] = float(twr) / 100
+    if fee        is not None: cfg["management_fee"] = float(fee) / 100
     return cfg
 
 
@@ -571,6 +585,8 @@ def _port_add_form():
             _field("Hold Period (y)",  inp("port-hold",  type="number", value=5.0, step=0.5)),
             _field("MOIC",             inp("port-moic",  type="number", value=1.75, step=0.01)),
             _field("Vintage",          dcc.Dropdown(id="port-vintage", options=[{"label":str(y),"value":y} for y in VINTAGES], value=2025, style=_dd())),
+            _field("Commitment Year",  dcc.Dropdown(id="port-commit-year", options=[{"label":str(y),"value":y} for y in VINTAGES], value=datetime.now().year, style=_dd())),
+            _field("Entry Date",       inp("port-entry-date", type="text", placeholder="YYYY-MM-DD", style={**INP,"minWidth":120})),
             _field("Segment",          drp("port-segment",     SEGMENTS,     "New")),
             _field("Alloc Status",     drp("port-alloc-status",ALLOC_STATUS, "Closed")),
             html.Div([
@@ -595,7 +611,65 @@ def tab_overview(portfolio, pipeline, placeholders, config):
 
     def pct(v): return float(v or 0)
 
-    # ── Live Investment Target and Restriction checks ────────────────────────────────────────────────
+    # ── Compute all possible actuals (keyed by metric_key) ───────────────────
+    sec_nav  = sum(d["nav"] for d in portfolio if d.get("deal_type")=="Secondary")
+    ci_nav   = sum(d["nav"] for d in portfolio if d.get("deal_type")=="Co-Investment")
+    sec_pct  = sec_nav/nav*100 if nav else 0
+    ci_pct   = ci_nav /nav*100 if nav else 0
+
+    by_region  = {}
+    by_sector  = {}
+    by_manager = {}
+    by_vintage = {}
+    for d in portfolio:
+        by_region [d.get("region","?")]  = by_region.get(d.get("region","?"),0)  + d["nav"]
+        by_sector [d.get("sector","?")]  = by_sector.get(d.get("sector","?"),0)  + d["nav"]
+        by_manager[d.get("manager","?")] = by_manager.get(d.get("manager","?"),0)+ d["nav"]
+        vk = str(d.get("vintage","?"))
+        by_vintage[vk] = by_vintage.get(vk, 0) + d["nav"]
+
+    max_region_pct  = max((v/nav*100 for v in by_region.values()),  default=0) if nav else 0
+    max_sector_pct  = max((v/nav*100 for v in by_sector.values()),  default=0) if nav else 0
+    max_manager_pct = max((v/nav*100 for v in by_manager.values()), default=0) if nav else 0
+    max_deal_pct    = m["top1"]*100
+    unfunded_pct    = m["total_unfunded"]/fs*100 if fs else 0
+    max_vintage_pct = max((v/nav*100 for v in by_vintage.values()), default=0) if nav else 0
+    max_vintage_yr  = max(by_vintage, key=lambda k: by_vintage[k]) if by_vintage else "—"
+    leverage_pct    = 0.0   # placeholder until leverage field added to deal form
+    primary_nav     = sum(d["nav"] for d in portfolio if d.get("strategy","") == "Primary")
+    primary_pct     = primary_nav/nav*100 if nav else 0
+    non_sec_nav     = sum(d["nav"] for d in portfolio if d.get("deal_type","") != "Secondary")
+    non_sec_pct     = non_sec_nav/nav*100 if nav else 0
+    na_eur_nav      = by_region.get("North America",0) + by_region.get("Europe",0)
+    non_naeur_pct   = (nav - na_eur_nav)/nav*100 if nav else 0
+    # Non-NA only (excludes Europe from the non-NA bucket)
+    na_nav          = by_region.get("North America",0)
+    non_na_pct      = (nav - na_nav)/nav*100 if nav else 0
+    # Listed company exposure — placeholder until deal-level flag added
+    listed_pct      = 0.0
+    # Overcommitment = total_commitment / NAV * 100 (reflects unfunded obligations vs portfolio value)
+    overcommitment_pct = m["total_commit"]/nav*100 if nav else 0
+
+    ACTUALS = {
+        "max_deal_pct":        max_deal_pct,
+        "max_manager_pct":     max_manager_pct,
+        "ci_pct":              ci_pct,
+        "max_sector_pct":      max_sector_pct,
+        "max_region_pct":      max_region_pct,
+        "unfunded_pct":        unfunded_pct,
+        "num_deals":           float(m["num"]),
+        "leverage_pct":        leverage_pct,
+        "primary_pct":         primary_pct,
+        "non_sec_pct":         non_sec_pct,
+        "non_naeur_pct":       non_naeur_pct,
+        "non_na_pct":          non_na_pct,
+        "max_vintage_pct":     max_vintage_pct,
+        "sec_pct":             sec_pct,
+        "listed_pct":          listed_pct,
+        "overcommitment_pct":  overcommitment_pct,
+    }
+
+    # ── Compliance row builder ────────────────────────────────────────────────
     def compliance_row(label, actual, limit, higher_is_bad=True, fmt="%"):
         ok = (actual <= limit) if higher_is_bad else (actual >= limit)
         color = C["green"] if ok else C["red"]
@@ -611,85 +685,56 @@ def tab_overview(portfolio, pipeline, placeholders, config):
                                color=color,fontWeight=700,textAlign="center")),
         ])
 
-    # Calculate actuals
-    sec_nav  = sum(d["nav"] for d in portfolio if d.get("deal_type")=="Secondary")
-    ci_nav   = sum(d["nav"] for d in portfolio if d.get("deal_type")=="Co-Investment")
-    sec_pct  = sec_nav/nav*100 if nav else 0
-    ci_pct   = ci_nav /nav*100 if nav else 0
+    def make_table(restrictions, title, accent):
+        rows_html = []
+        n_breach  = 0
+        for r in restrictions:
+            mk  = r.get("metric_key","")
+            lbl = r.get("label", mk)
+            # append vintage year to label when relevant
+            if mk == "max_vintage_pct" and max_vintage_yr != "—":
+                lbl = f"{lbl} ({max_vintage_yr})"
+            actual = ACTUALS.get(mk, 0.0)
+            limit  = float(r.get("limit", 0))
+            hib    = bool(r.get("higher_is_bad", True))
+            fmt    = r.get("fmt", "%")
+            ok     = (actual <= limit) if hib else (actual >= limit)
+            if not ok:
+                n_breach += 1
+            rows_html.append(compliance_row(lbl, actual, limit, hib, fmt))
 
-    by_region = {}
-    by_sector = {}
-    by_manager= {}
-    for d in portfolio:
-        by_region [d.get("region","?")] = by_region.get(d.get("region","?"),0) + d["nav"]
-        by_sector [d.get("sector","?")] = by_sector.get(d.get("sector","?"),0) + d["nav"]
-        by_manager[d.get("manager","?")] = by_manager.get(d.get("manager","?"),0) + d["nav"]
+        badge_color = C["green"] if n_breach == 0 else C["red"]
+        badge_text  = "All Clear" if n_breach == 0 else f"{n_breach} Breach{'es' if n_breach>1 else ''}"
 
-    max_region_pct  = max((v/nav*100 for v in by_region.values()),  default=0) if nav else 0
-    max_sector_pct  = max((v/nav*100 for v in by_sector.values()),  default=0) if nav else 0
-    max_manager_pct = max((v/nav*100 for v in by_manager.values()), default=0) if nav else 0
-    max_deal_pct    = m["top1"]*100
-    unfunded_pct    = m["total_unfunded"]/fs*100 if fs else 0
+        header = html.Div([
+            html.Span(title, style=dict(fontSize=9,letterSpacing=2.5,color=C["muted"],
+                                        textTransform="uppercase",fontFamily=C["sans"],fontWeight=700)),
+            html.Span(badge_text, style=dict(
+                fontSize=10, fontFamily=C["mono"], fontWeight=700, color=badge_color,
+                background=cl(badge_color,0.12), border=f"1px solid {cl(badge_color,0.35)}",
+                borderRadius=4, padding="2px 8px", marginLeft=10,
+            )),
+        ], style=dict(display="flex",alignItems="center",marginBottom=8))
 
-    lim_deal    = pct(config.get("limit_single_deal_pct",    5))
-    lim_manager = pct(config.get("limit_single_manager_pct",20))
-    lim_ci      = pct(config.get("limit_coinvest_max_pct",  40))
-    lim_sector  = pct(config.get("limit_single_sector_pct", 35))
-    lim_region  = pct(config.get("limit_single_region_pct", 60))
-    lim_unfunded= pct(config.get("limit_unfunded_pct",      25))
-    min_deals   = int(config.get("min_deals", 10))
-    # New restrictions
-    lim_leverage   = pct(config.get("limit_leverage_pct",       0))
-    lim_primaries  = pct(config.get("limit_primaries_pct",      10))
-    lim_non_sec    = pct(config.get("limit_non_secondary_pct",  40))
-    lim_non_naeur  = pct(config.get("limit_non_na_europe_pct",  25))
-    lim_vintage    = pct(config.get("limit_single_vintage_pct", 35))
+        tbl = html.Table([
+            html.Thead(html.Tr([
+                html.Th("Restriction / Target",  style=dict(**TBL_HEAD, textAlign="left")),
+                html.Th("Current",               style=dict(**TBL_HEAD, textAlign="right")),
+                html.Th("Limit",                 style=dict(**TBL_HEAD, textAlign="right")),
+                html.Th("Status",                style=dict(**TBL_HEAD, textAlign="center")),
+            ])),
+            html.Tbody(rows_html),
+        ], style=dict(width="100%", borderCollapse="collapse", background=C["surface"], borderRadius=8))
 
-    # Compute actuals for new restrictions
-    # Leverage: placeholder — 0 until leverage tracking is added to deal form
-    leverage_pct = 0.0
-    # Primaries: deals with strategy == "Primary"
-    primary_nav = sum(d["nav"] for d in portfolio if d.get("strategy","") == "Primary")
-    primary_pct = primary_nav / nav * 100 if nav else 0
-    # Non-secondary: everything that isn't deal_type=="Secondary"
-    non_sec_nav = sum(d["nav"] for d in portfolio if d.get("deal_type","") != "Secondary")
-    non_sec_pct = non_sec_nav / nav * 100 if nav else 0
-    # Non-NA/Europe: Asia + Global + other
-    na_eur_nav  = by_region.get("North America", 0) + by_region.get("Europe", 0)
-    non_naeur_nav = nav - na_eur_nav
-    non_naeur_pct = non_naeur_nav / nav * 100 if nav else 0
-    # Single vintage
-    by_vintage = {}
-    for d in portfolio:
-        vk = str(d.get("vintage", "?"))
-        by_vintage[vk] = by_vintage.get(vk, 0) + d["nav"]
-    max_vintage_pct = max((v / nav * 100 for v in by_vintage.values()), default=0) if nav else 0
-    max_vintage_yr  = max(by_vintage, key=lambda k: by_vintage[k]) if by_vintage else "—"
+        return n_breach, card([header, tbl], dict(flex=1, minWidth=340))
 
-    compliance_table = html.Table([
-        html.Thead(html.Tr([
-            html.Th("Restriction",       style=dict(**TBL_HEAD, textAlign="left")),
-            html.Th("Current",           style=dict(**TBL_HEAD, textAlign="right")),
-            html.Th("Limit",             style=dict(**TBL_HEAD, textAlign="right")),
-            html.Th("Status",            style=dict(**TBL_HEAD, textAlign="center")),
-        ])),
-        html.Tbody([
-            compliance_row("Single Deal Concentration",    max_deal_pct,    lim_deal),
-            compliance_row("Single Manager Concentration", max_manager_pct, lim_manager),
-            compliance_row("Co-Investment Allocation",     ci_pct,          lim_ci),
-            compliance_row("Single Sector Concentration",  max_sector_pct,  lim_sector),
-            compliance_row("Single Region Concentration",  max_region_pct,  lim_region),
-            compliance_row("Unfunded / Fund Size",         unfunded_pct,    lim_unfunded),
-            compliance_row("Minimum # Positions",          m["num"],        min_deals, higher_is_bad=False, fmt="n"),
-            compliance_row(f"Leverage (% NAV)",            leverage_pct,    lim_leverage),
-            compliance_row("Primary Fund Investments",     primary_pct,     lim_primaries),
-            compliance_row("Non-Secondary Allocation",     non_sec_pct,     lim_non_sec),
-            compliance_row("Non-NA/Europe Exposure",       non_naeur_pct,   lim_non_naeur),
-            compliance_row(f"Single Vintage ({max_vintage_yr})", max_vintage_pct, lim_vintage),
-        ]),
-    ], style=dict(width="100%", borderCollapse="collapse", background=C["surface"], borderRadius=8))
+    # Load restriction lists from config (fall back to defaults if not yet saved)
+    legal_list  = config.get("legal_restrictions",  DEFAULT_CONFIG["legal_restrictions"])
+    target_list = config.get("investment_targets",  DEFAULT_CONFIG["investment_targets"])
 
-    # ── Allocation targets vs actuals ─────────────────────────────────────────
+    legal_breaches,  legal_card  = make_table(legal_list,  "Legal Restrictions",  C["red"])
+    target_breaches, target_card = make_table(target_list, "Investment Targets",  C["amber"])
+    n_breaches = legal_breaches + target_breaches
     def alloc_bar(label, actual, target, color):
         w_actual = min(actual, 100)
         w_target = min(target, 100)
@@ -782,20 +827,6 @@ def tab_overview(portfolio, pipeline, placeholders, config):
     ], dict(flex=1, minWidth=280))
 
     # ── Summary KPIs ─────────────────────────────────────────────────────────
-    n_breaches = sum([
-        max_deal_pct > lim_deal,
-        max_manager_pct > lim_manager,
-        ci_pct > lim_ci,
-        max_sector_pct > lim_sector,
-        max_region_pct > lim_region,
-        unfunded_pct > lim_unfunded,
-        m["num"] < min_deals,
-        leverage_pct > lim_leverage,
-        primary_pct > lim_primaries,
-        non_sec_pct > lim_non_sec,
-        non_naeur_pct > lim_non_naeur,
-        max_vintage_pct > lim_vintage,
-    ])
     compliance_color = C["green"] if n_breaches == 0 else C["red"]
     compliance_label = "All Clear" if n_breaches == 0 else f"{n_breaches} Breach{'es' if n_breaches>1 else ''}"
 
@@ -805,7 +836,7 @@ def tab_overview(portfolio, pipeline, placeholders, config):
         kpi("Secondaries",       f"{sec_pct:.1f}%",    f"Target {pct(config.get('target_secondary_pct',70)):.0f}%", C["sky"]),
         kpi("Co-Investments",    f"{ci_pct:.1f}%",     f"Target {pct(config.get('target_coinvest_pct',30)):.0f}%",  C["teal"]),
         kpi("Portfolio IRR",     f"{m['w_irr']*100:.1f}%", "NAV-weighted",              C["purple"]),
-        kpi("Targets and Restrictions",        compliance_label,     "Mandate restrictions",           compliance_color),
+        kpi("Targets and Restrictions", compliance_label, "Mandate restrictions",       compliance_color),
     ], style=dict(display="flex",gap=10,flexWrap="wrap",marginBottom=16))
 
     return html.Div([
@@ -814,7 +845,8 @@ def tab_overview(portfolio, pipeline, placeholders, config):
             html.Div([identity, html.Div(style=dict(height=16)), returns], style=dict(flex=1, minWidth=280)),
             html.Div([
                 alloc_section,
-                card([slbl("Mandate & Legal Restrictions"), compliance_table]),
+                html.Div([legal_card, target_card],
+                         style=dict(display="flex", gap=16, flexWrap="wrap")),
             ], style=dict(flex=2, minWidth=400)),
         ], style=dict(display="flex", gap=16, flexWrap="wrap")),
     ])
@@ -843,6 +875,8 @@ def tab_portfolio(portfolio, config):
             "Hold (y)":     f"{d.get('hold_period',0):.1f}",
             "Weight":       f"{d.get('nav',0)/total*100:.1f}%",
             "Vintage":      str(d.get("vintage","")),
+            "Commit Year":  str(d.get("commitment_year",d.get("vintage",""))),
+            "Entry Date":   str(d.get("entry_date","")),
             "Segment":      d.get("segment",""),
             "Status":       d.get("allocation_status",""),
         })
@@ -941,7 +975,10 @@ def tab_pipeline(pipeline, portfolio, config):
 
     # Add form
     form = html.Div([
-        section_lbl("Add Pipeline Deal"),
+        html.Div([
+            section_lbl("Add / Edit Pipeline Deal"),
+            html.Div(id="pipe-form-mode", style=dict(fontSize=10,color=C["amber"],fontFamily=C["mono"],marginBottom=6)),
+        ]),
         _form_row(
             _field("Deal Name",       dcc.Input(id="pipe-name",       type="text",  style=INP, placeholder="Project X")),
             _field("Strategy",        dcc.Dropdown(id="pipe-strategy", options=dd_opts(STRATEGIES), value=STRATEGIES[0],  style=_dd())),
@@ -954,6 +991,8 @@ def tab_pipeline(pipeline, portfolio, config):
             _field("Priority",        dcc.Dropdown(id="pipe-priority", options=dd_opts(PRIORITIES), value="Medium",       style=_dd())),
             html.Div([html.Label(" ",style=dict(display="block",marginBottom=4,fontSize=9)),
                       html.Button("+ Add",id="add-pipe-btn",style={**BTN(C["purple"]),"minWidth":80})]),
+            html.Div([html.Label(" ",style=dict(display="block",marginBottom=4,fontSize=9)),
+                      html.Button("Clear",id="clear-pipe-btn",style={**BTN(C["surface"],C["muted"]),"border":f"1px solid {C['border2']}","minWidth":60})]),
         ),
         html.Div(id="pipe-msg",style=dict(color=C["green"],fontSize=11,marginTop=4)),
     ], style=dict(background=C["surface"],border=f"1px solid {cl(C['purple'],0.4)}",borderRadius=8,padding=18,marginBottom=18))
@@ -1159,7 +1198,10 @@ def tab_deploy(placeholders, config):
     fig.update_layout(**CHART_BASE, margin=dict(l=52,r=20,t=40,b=40), xaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]), yaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]), legend=dict(bgcolor=C["panel"],bordercolor=C["border"],borderwidth=1), height=300, title="Planned Commitment Schedule ($M)")
 
     form = html.Div([
-        section_lbl("Add Planned Future Commitment"),
+        html.Div([
+            section_lbl("Add / Edit Planned Future Commitment"),
+            html.Div(id="ph-form-mode", style=dict(fontSize=10,color=C["amber"],fontFamily=C["mono"],marginBottom=6)),
+        ]),
         html.Div([
             _field("Name",         dcc.Input(id="ph-name",     type="text",  style=INP, placeholder="GP-Led Placeholder 1")),
             _field("Strategy",     dcc.Dropdown(id="ph-strategy", options=dd_opts(STRATEGIES), value=STRATEGIES[0], style=_dd())),
@@ -1170,6 +1212,8 @@ def tab_deploy(placeholders, config):
             _field("Expected Month", dcc.Dropdown(id="ph-month", options=month_options(), value=3, style=_dd())),
             html.Div([html.Label(" ",style=dict(display="block",marginBottom=4,fontSize=9)),
                       html.Button("+ Add",id="add-ph-btn",style={**BTN(C["teal"]),"minWidth":80})]),
+            html.Div([html.Label(" ",style=dict(display="block",marginBottom=4,fontSize=9)),
+                      html.Button("Clear",id="clear-ph-btn",style={**BTN(C["surface"],C["muted"]),"border":f"1px solid {C['border2']}","minWidth":60})]),
         ], style=dict(display="flex",gap=8,flexWrap="wrap",alignItems="flex-end")),
         html.Div(id="ph-msg",style=dict(color=C["green"],fontSize=11,marginTop=4)),
     ], style=dict(background=C["surface"],border=f"1px solid {cl(C['teal'],0.4)}",borderRadius=8,padding=18,marginBottom=18))
@@ -1583,9 +1627,9 @@ def tab_analytics(portfolio, pipeline, placeholders, config):
                 dcc.RadioItems(
                     id="analytics-scope",
                     options=[
-                        {"label": " Current Portfolio",                        "value": "current"},
-                        {"label": " + Pipeline",                               "value": "pipeline"},
-                        {"label": " + Pipeline + Future Deals (Pro Forma)",    "value": "proforma"},
+                        {"label": " Current Portfolio",                              "value": "current"},
+                        {"label": " + Pipeline",                                   "value": "pipeline"},
+                        {"label": " + Pipeline + Deployment Plan",                 "value": "proforma"},
                     ],
                     value="current",
                     inline=True,
@@ -1633,14 +1677,88 @@ def tab_segments(portfolio, pipeline, placeholders, config):
         kpi("Pro Forma",        fmt_m(ph_nav),    f"{len(placeholders)} placeholders", C["pink"],130),
     ], style=dict(display="flex",gap=10,flexWrap="wrap",marginBottom=16))
 
-    # 12-month cumulative TWR forecast by segment
-    tgt = float(config.get("target_net_twr",0.13))
-    base = datetime(2026,1,1)
-    months = [(base+relativedelta(months=i)).strftime("%b %Y") for i in range(12)]
-    total_twrs = [(((1+tgt)**(i/12))-1)*100         for i in range(12)]
-    seed_twrs  = [(((1+tgt*0.95)**(i/12))-1)*100    for i in range(12)]
-    new_twrs   = [(((1+tgt*1.05)**(i/12))-1)*100    for i in range(12)]
-    mm_twrs    = [(((1.03)**(i/12))-1)*100          for i in range(12)]
+    # ── Cashflow-based TWR forecast ──────────────────────────────────────────
+    # Formula per period: sub-period return = (NAV_end - calls + dists) / NAV_start - 1
+    # Chain-link across 24 months. Each deal contributes projected cashflows
+    # based on its IRR, hold period, current NAV and distribution rate.
+    n_months   = 24
+    dist_rate  = float(config.get("distribution_rate", 0.20))  # annual
+    base_dt    = datetime.now().replace(day=1)
+    month_lbls = [(base_dt + relativedelta(months=i)).strftime("%b %Y") for i in range(n_months)]
+
+    def project_deal_cashflows(deal, n):
+        """Return (nav_series, calls_series, dists_series) each length n months."""
+        nav0    = float(deal.get("nav", 0))
+        irr     = float(deal.get("target_irr", 0.15))
+        hold_y  = float(deal.get("hold_period", 5))
+        hold_m  = max(1, int(hold_y * 12))
+        monthly_growth = (1 + irr) ** (1/12) - 1
+        monthly_dist   = dist_rate / 12
+        navs   = [0.0] * n
+        calls  = [0.0] * n
+        dists  = [0.0] * n
+        nav_t  = nav0
+        for m in range(n):
+            if m >= hold_m:
+                # Deal has exited — NAV collapses, final distribution
+                if navs[m-1] > 0 if m > 0 else nav0 > 0:
+                    dists[m] = navs[m-1] if m > 0 else nav0
+                navs[m] = 0.0
+            else:
+                d_nav  = nav_t * monthly_growth
+                dist_m = nav_t * monthly_dist
+                nav_t  = nav_t + d_nav - dist_m
+                navs[m]  = nav_t
+                dists[m] = dist_m
+        return navs, calls, dists
+
+    def compute_twr_series(deals, n):
+        if not deals:
+            return [0.0] * n
+        # Aggregate NAV, calls, dists across all deals in this segment
+        agg_nav   = [0.0] * n
+        agg_calls = [0.0] * n
+        agg_dists = [0.0] * n
+        for d in deals:
+            navs, calls, dists = project_deal_cashflows(d, n)
+            for m in range(n):
+                agg_nav[m]   += navs[m]
+                agg_calls[m] += calls[m]
+                agg_dists[m] += dists[m]
+        # Starting NAV for period 0 is current portfolio NAV
+        start_nav = sum(d.get("nav", 0) for d in deals)
+        # Chain-link TWR
+        cumulative = 1.0
+        twr_series = []
+        prev_nav   = start_nav
+        for m in range(n):
+            nav_end  = agg_nav[m]
+            calls_m  = agg_calls[m]
+            dists_m  = agg_dists[m]
+            if prev_nav > 0:
+                sub_return = (nav_end - calls_m + dists_m) / prev_nav - 1
+            else:
+                sub_return = 0.0
+            cumulative *= (1 + sub_return)
+            twr_series.append((cumulative - 1) * 100)
+            prev_nav = nav_end if nav_end > 0 else prev_nav
+        return twr_series
+
+    # Money market: simple compounding
+    mm_twrs = [(((1 + mm_twr) ** ((i+1)/12)) - 1) * 100 for i in range(n_months)]
+
+    total_twrs = compute_twr_series(seed_deals + new_deals, n_months)
+    seed_twrs  = compute_twr_series(seed_deals, n_months)
+    new_twrs   = compute_twr_series(new_deals,  n_months)
+
+    # TWR formula annotation
+    formula_note = html.Div(
+        "TWR formula: sub-period return = (NAV_end − Calls + Distributions) / NAV_start − 1, chain-linked monthly. "
+        "NAV projected per deal using target IRR and hold period; distributions modelled at fund distribution rate.",
+        style=dict(fontSize=10, color=C["muted"], fontFamily=C["mono"],
+                   background=C["surface"], border=f"1px solid {C['border']}",
+                   borderRadius=6, padding="8px 12px", marginBottom=12)
+    )
 
     fig_twr = go.Figure()
     for name, y, color, dash in [
@@ -1649,11 +1767,53 @@ def tab_segments(portfolio, pipeline, placeholders, config):
         ("New Deals",       new_twrs,   C["purple"], "dot"),
         ("Money Market",    mm_twrs,    C["amber"],  "dashdot"),
     ]:
-        fig_twr.add_trace(go.Scatter(x=months,y=y,name=name,mode="lines",
-                                     line=dict(color=color,width=2,dash=dash)))
-    fig_twr.update_layout(**chart(height=360, title="12-Month Cumulative TWR Forecast by Segment",
+        fig_twr.add_trace(go.Scatter(x=month_lbls, y=y, name=name, mode="lines",
+                                     line=dict(color=color, width=2, dash=dash)))
+    # Target TWR reference line
+    tgt = float(config.get("target_net_twr", 0.13))
+    tgt_series = [(((1+tgt)**((i+1)/12))-1)*100 for i in range(n_months)]
+    fig_twr.add_trace(go.Scatter(x=month_lbls, y=tgt_series, name="Target TWR",
+                                  mode="lines", line=dict(color=C["red"], width=1, dash="longdash"),
+                                  opacity=0.6))
+    fig_twr.update_layout(**chart(height=380,
+                           title="24-Month Cumulative TWR Forecast (Cashflow-Based, Chain-Linked)",
                            yaxis_title="Cumulative TWR (%)", hovermode="x unified",
-                           legend=dict(orientation="h",y=1.08,x=0)))
+                           legend=dict(orientation="h", y=1.08, x=0)))
+
+    # Monthly sub-period returns table for Total Portfolio
+    sp_returns = []
+    prev_nav = sum(d.get("nav",0) for d in seed_deals+new_deals)
+    all_navs = [0.0]*n_months
+    all_calls= [0.0]*n_months
+    all_dists= [0.0]*n_months
+    for d in seed_deals+new_deals:
+        navs, calls, dists = project_deal_cashflows(d, n_months)
+        for m in range(n_months):
+            all_navs[m]  += navs[m]
+            all_calls[m] += calls[m]
+            all_dists[m] += dists[m]
+    for m in range(n_months):
+        nav_end = all_navs[m]
+        r = (nav_end - all_calls[m] + all_dists[m]) / prev_nav - 1 if prev_nav > 0 else 0
+        sp_returns.append({
+            "Month": month_lbls[m],
+            "NAV Start ($M)": f"{prev_nav:.1f}",
+            "NAV End ($M)":   f"{nav_end:.1f}",
+            "Calls ($M)":     f"{all_calls[m]:.1f}",
+            "Dists ($M)":     f"{all_dists[m]:.1f}",
+            "Sub-period Return": f"{r*100:.2f}%",
+            "Cumulative TWR":    f"{total_twrs[m]:.2f}%",
+        })
+        prev_nav = nav_end if nav_end > 0 else prev_nav
+
+    sp_tbl = dash_table.DataTable(
+        data=sp_returns,
+        columns=[{"name":c,"id":c} for c in sp_returns[0]],
+        style_cell=TBL_CELL, style_header=TBL_HEAD,
+        style_data_conditional=TBL_ODD,
+        page_size=12, style_table={"overflowX":"auto"},
+        export_format="xlsx",
+    )
 
     # Allocation & contribution charts
     seg_labels = ["Seed","New Deals","Money Market","Pipeline","Pro Forma"]
@@ -1661,21 +1821,31 @@ def tab_segments(portfolio, pipeline, placeholders, config):
     seg_colors = [C["green"],C["purple"],C["amber"],C["teal"],C["pink"]]
     fig_alloc = go.Figure(go.Pie(labels=seg_labels, values=seg_vals, hole=0.5,
                                   marker_colors=seg_colors, textfont_color=C["text"]))
-    fig_alloc.update_layout(**CHART_BASE, margin=dict(l=52,r=20,t=40,b=40), xaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]), yaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]), legend=dict(bgcolor=C["panel"],bordercolor=C["border"],borderwidth=1), height=300, title="Segment Allocation")
+    fig_alloc.update_layout(**CHART_BASE, margin=dict(l=52,r=20,t=40,b=40),
+                             xaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]),
+                             yaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]),
+                             legend=dict(bgcolor=C["panel"],bordercolor=C["border"],borderwidth=1),
+                             height=300, title="Segment Allocation")
 
     contrib_segs = ["Seed","New Deals","MM"]
     contrib_vals = [seed_nav*seed_twr*100, new_nav*new_twr*100, mm_nav*mm_twr*100]
     fig_contrib = go.Figure(go.Bar(x=contrib_segs, y=contrib_vals,
                                     marker_color=[C["green"],C["purple"],C["amber"]],
-                                    text=[f"{v:.1f}" for v in contrib_vals],textposition="outside",
-                                    textfont_color=C["text"]))
-    fig_contrib.update_layout(**CHART_BASE, margin=dict(l=52,r=20,t=40,b=40), xaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]), yaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]), legend=dict(bgcolor=C["panel"],bordercolor=C["border"],borderwidth=1), height=300, title="TWR Contribution (NAV × IRR)")
+                                    text=[f"{v:.1f}" for v in contrib_vals],
+                                    textposition="outside", textfont_color=C["text"]))
+    fig_contrib.update_layout(**CHART_BASE, margin=dict(l=52,r=20,t=40,b=40),
+                               xaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]),
+                               yaxis=dict(gridcolor=C["border"],zerolinecolor=C["border"]),
+                               legend=dict(bgcolor=C["panel"],bordercolor=C["border"],borderwidth=1),
+                               height=300, title="TWR Contribution (NAV × IRR)")
 
     def seg_table(deals, name):
         if not deals:
             return html.P(f"No {name} deals yet.", style=dict(color=C["muted"],fontSize=12))
         data = [{"Deal":d["name"],"NAV":fmt_m(d["nav"]),"IRR":f"{d.get('target_irr',0)*100:.1f}%",
-                 "Vintage":str(d.get("vintage","")),"Manager":d.get("manager","")} for d in deals]
+                 "Vintage":str(d.get("vintage","")),"Commit Year":str(d.get("commitment_year","")),
+                 "Entry Date":str(d.get("entry_date","")),"Hold(y)":f"{d.get('hold_period',0):.1f}",
+                 "Manager":d.get("manager","")} for d in deals]
         return dash_table.DataTable(data=data, columns=[{"name":c,"id":c} for c in data[0]],
                                     style_cell=TBL_CELL, style_header=TBL_HEAD,
                                     style_data_conditional=TBL_ODD, page_size=8,
@@ -1683,7 +1853,9 @@ def tab_segments(portfolio, pipeline, placeholders, config):
 
     return html.Div([
         kpi_row,
+        formula_note,
         card([dcc.Graph(figure=fig_twr, config={"displayModeBar":True})], dict(marginBottom=16)),
+        card([section_lbl("Monthly TWR Detail — Total Portfolio"), sp_tbl], dict(marginBottom=16)),
         html.Div([
             card([dcc.Graph(figure=fig_alloc,  config={"displayModeBar":False})], dict(flex=1)),
             card([dcc.Graph(figure=fig_contrib,config={"displayModeBar":False})], dict(flex=1)),
@@ -1967,46 +2139,86 @@ def tab_settings(config):
             ], style=dict(display="flex", gap=24, flexWrap="wrap")),
         ], dict(marginBottom=16)),
 
-        # ── Legal / Mandate Limits ────────────────────────────────────────────
+        # ── Restrictions Editor ───────────────────────────────────────────────
         card([
-            section_lbl("Mandate & Legal Restrictions"),
+            section_lbl("Legal Restrictions — Editable"),
+            html.Small(
+                "Edit limits directly in the table. Add rows with the button. "
+                "metric_key must match one of the computed fields — see tooltip below.",
+                style=dict(color=C["muted"], fontSize=10, fontFamily=C["mono"], display="block", marginBottom=10)
+            ),
+            dash_table.DataTable(
+                id="cfg-legal-tbl",
+                data=config.get("legal_restrictions", DEFAULT_CONFIG["legal_restrictions"]),
+                columns=[
+                    {"name": "Label",          "id": "label",          "editable": True},
+                    {"name": "Metric Key",     "id": "metric_key",     "editable": True},
+                    {"name": "Limit (%  or n)","id": "limit",          "editable": True, "type": "numeric"},
+                    {"name": "Max (✓) / Min (✗)", "id": "higher_is_bad","editable": True},
+                    {"name": "Format (% / n)", "id": "fmt",            "editable": True},
+                ],
+                editable=True, row_deletable=True,
+                style_cell=TBL_CELL, style_header=TBL_HEAD,
+                style_data_conditional=TBL_ODD,
+                style_table={"overflowX": "auto"},
+            ),
             html.Div([
-                _field("Max Single Deal % NAV",      dcc.Input(id="cfg-lim-deal",     type="number", value=float(config.get("limit_single_deal_pct",5)),     step=0.5, style=INP)),
-                _field("Max Single Manager % NAV",   dcc.Input(id="cfg-lim-manager",  type="number", value=float(config.get("limit_single_manager_pct",20)),  step=1,   style=INP)),
-                _field("Max Co-Invest % NAV",        dcc.Input(id="cfg-lim-ci",       type="number", value=float(config.get("limit_coinvest_max_pct",40)),    step=1,   style=INP)),
-                _field("Max Single Sector % NAV",    dcc.Input(id="cfg-lim-sector",   type="number", value=float(config.get("limit_single_sector_pct",35)),   step=1,   style=INP)),
-                _field("Max Single Region % NAV",    dcc.Input(id="cfg-lim-region",   type="number", value=float(config.get("limit_single_region_pct",60)),   step=1,   style=INP)),
-                _field("Max Unfunded % Fund Size",   dcc.Input(id="cfg-lim-unfunded", type="number", value=float(config.get("limit_unfunded_pct",25)),         step=1,   style=INP)),
-                _field("Min # Positions",            dcc.Input(id="cfg-lim-mindeal",  type="number", value=int(config.get("min_deals",10)),                    step=1,   style=INP)),
-            ], style=dict(display="grid", gridTemplateColumns="repeat(4,1fr)", gap=12)),
+                html.Button("+ Add Row", id="btn-add-legal-row",
+                            style={**BTN(C["teal"]), "marginTop": 8, "marginRight": 8}),
+                html.Button("💾 Save Restrictions", id="btn-save-restrictions",
+                            style={**BTN(C["blue"]), "marginTop": 8}),
+            ]),
         ], dict(marginBottom=8)),
 
-        # ── Additional Investment Restrictions ────────────────────────────────
         card([
-            section_lbl("Additional Investment Restrictions"),
-            html.Div([
-                _field("Max Leverage % NAV",
-                       dcc.Input(id="cfg-lim-leverage", type="number",
-                                 value=float(config.get("limit_leverage_pct",0)), step=1, style=INP)),
-                _field("Max Primaries % NAV",
-                       dcc.Input(id="cfg-lim-primaries", type="number",
-                                 value=float(config.get("limit_primaries_pct",10)), step=1, style=INP)),
-                _field("Max Non-Secondary % NAV",
-                       dcc.Input(id="cfg-lim-non-sec", type="number",
-                                 value=float(config.get("limit_non_secondary_pct",40)), step=1, style=INP)),
-                _field("Max Non-NA/Europe % NAV",
-                       dcc.Input(id="cfg-lim-non-naeur", type="number",
-                                 value=float(config.get("limit_non_na_europe_pct",25)), step=1, style=INP)),
-                _field("Max Single Vintage % NAV",
-                       dcc.Input(id="cfg-lim-vintage", type="number",
-                                 value=float(config.get("limit_single_vintage_pct",35)), step=1, style=INP)),
-            ], style=dict(display="grid", gridTemplateColumns="repeat(5,1fr)", gap=12)),
-            html.Div(html.Small(
-                "Leverage: 0% = no leverage permitted. Primaries: capped by strategy='Primary'. "
-                "Non-Secondary: all non-Secondary deal types. Non-NA/Europe: Asia + Global + other regions. "
-                "Vintage: max concentration in any single vintage year.",
-                style=dict(color=C["muted"], fontSize=10, fontFamily=C["mono"], display="block", marginTop=8)
-            )),
+            section_lbl("Investment Targets — Editable"),
+            html.Small(
+                "Same structure as Legal Restrictions above but displayed separately on the Overview page.",
+                style=dict(color=C["muted"], fontSize=10, fontFamily=C["mono"], display="block", marginBottom=10)
+            ),
+            dash_table.DataTable(
+                id="cfg-targets-tbl",
+                data=config.get("investment_targets", DEFAULT_CONFIG["investment_targets"]),
+                columns=[
+                    {"name": "Label",          "id": "label",          "editable": True},
+                    {"name": "Metric Key",     "id": "metric_key",     "editable": True},
+                    {"name": "Limit (% or n)", "id": "limit",          "editable": True, "type": "numeric"},
+                    {"name": "Max (✓) / Min (✗)", "id": "higher_is_bad","editable": True},
+                    {"name": "Format (% / n)", "id": "fmt",            "editable": True},
+                ],
+                editable=True, row_deletable=True,
+                style_cell=TBL_CELL, style_header=TBL_HEAD,
+                style_data_conditional=TBL_ODD,
+                style_table={"overflowX": "auto"},
+            ),
+            html.Button("+ Add Row", id="btn-add-target-row",
+                        style={**BTN(C["teal"]), "marginTop": 8}),
+            html.Div(id="restrictions-save-msg",
+                     style=dict(marginTop=8, color=C["green"], fontSize=11, fontFamily=C["mono"])),
+            html.Details([
+                html.Summary("Available metric_key values", style=dict(
+                    fontSize=10, color=C["muted"], fontFamily=C["mono"], cursor="pointer", marginTop=10)),
+                html.Pre(
+                    "max_deal_pct      — largest single asset as % NAV\n"
+                    "max_manager_pct   — largest single manager as % NAV\n"
+                    "ci_pct            — co-investments as % NAV\n"
+                    "sec_pct           — secondaries as % NAV\n"
+                    "max_sector_pct    — largest single sector as % NAV\n"
+                    "max_region_pct    — largest single region as % NAV\n"
+                    "non_na_pct        — non-North America exposure as % NAV\n"
+                    "non_naeur_pct     — non-NA/Europe exposure as % NAV\n"
+                    "non_sec_pct       — non-secondary deals as % NAV\n"
+                    "unfunded_pct      — unfunded as % fund size\n"
+                    "overcommitment_pct— total commitment / NAV × 100\n"
+                    "leverage_pct      — leverage % NAV (placeholder)\n"
+                    "listed_pct        — listed company exposure % NAV (placeholder)\n"
+                    "primary_pct       — primary fund deals as % NAV\n"
+                    "max_vintage_pct   — largest single vintage as % NAV\n"
+                    "num_deals         — number of portfolio positions",
+                    style=dict(fontSize=10, color=C["sky"], fontFamily=C["mono"],
+                               background=C["bg"], padding=10, borderRadius=6, marginTop=6)
+                ),
+            ]),
         ], dict(marginBottom=16)),
 
         # ── Fund Parameters ───────────────────────────────────────────────────
@@ -2062,11 +2274,64 @@ def calc_unfunded(tc, cc):
     except: return "$—"
 
 
+# ── Persist table row selections across re-renders ───────────────────────────
+# The tab router re-renders tab content whenever any store changes, resetting
+# selected_rows=[]. These callbacks capture the selection into a separate Store
+# so the edit button always knows which row was last selected.
+
+@app.callback(
+    Output("port-selected-idx","data"),
+    Input("portfolio-table","selected_rows"),
+    Input("portfolio-table","derived_virtual_data"),
+    prevent_initial_call=True,
+)
+def persist_port_selection(selected_rows, virtual_data):
+    if not selected_rows:
+        return no_update
+    pos = selected_rows[0]
+    vdata = virtual_data or []
+    if vdata and pos < len(vdata):
+        return vdata[pos].get("_idx", pos)
+    return pos
+
+@app.callback(
+    Output("pipe-selected-idx","data"),
+    Input("pipeline-table","selected_rows"),
+    Input("pipeline-table","derived_virtual_data"),
+    prevent_initial_call=True,
+)
+def persist_pipe_selection(selected_rows, virtual_data):
+    if not selected_rows:
+        return no_update
+    pos = selected_rows[0]
+    vdata = virtual_data or []
+    if vdata and pos < len(vdata):
+        return vdata[pos].get("_idx", pos)
+    return pos
+
+@app.callback(
+    Output("ph-selected-idx","data"),
+    Input("ph-table","selected_rows"),
+    Input("ph-table","derived_virtual_data"),
+    prevent_initial_call=True,
+)
+def persist_ph_selection(selected_rows, virtual_data):
+    if not selected_rows:
+        return no_update
+    pos = selected_rows[0]
+    vdata = virtual_data or []
+    if vdata and pos < len(vdata):
+        return vdata[pos].get("_idx", pos)
+    return pos
+
+
 # ── Portfolio: add or update ─────────────────────────────────────────────────
 @app.callback(
     Output("port-store","data"),
     Output("next-id","data"),
     Output("port-msg","children"),
+    Output("edit-idx","data",allow_duplicate=True),
+    Output("port-selected-idx","data",allow_duplicate=True),
     Input("add-port-btn","n_clicks"),
     State("port-store","data"), State("next-id","data"), State("edit-idx","data"),
     State("port-name","value"), State("port-manager","value"),
@@ -2077,16 +2342,18 @@ def calc_unfunded(tc, cc):
     State("port-nav","value"), State("port-irr","value"),
     State("port-hold","value"), State("port-moic","value"),
     State("port-p2nav","value"),
-    State("port-vintage","value"), State("port-segment","value"),
-    State("port-alloc-status","value"),
+    State("port-vintage","value"), State("port-commit-year","value"),
+    State("port-entry-date","value"),
+    State("port-segment","value"), State("port-alloc-status","value"),
     prevent_initial_call=True,
 )
 def add_or_update_portfolio(_, portfolio, nid, edit_idx,
                              name, manager, strategy, dtype, stage, sector, region,
                              currency, total_commit, curr_commit, nav, irr,
-                             hold, moic, p2nav, vintage, segment, alloc_status):
+                             hold, moic, p2nav, vintage, commit_year, entry_date,
+                             segment, alloc_status):
     if not name:
-        return no_update, no_update, "⚠ Enter a deal name."
+        return no_update, no_update, "⚠ Enter a deal name.", no_update, no_update
     p = portfolio or []
     irr_dec  = float(irr or 0)/100
     nav_val  = float(nav or 0)
@@ -2100,16 +2367,18 @@ def add_or_update_portfolio(_, portfolio, nid, edit_idx,
         hold_period=float(hold or 5), moic=float(moic or 1.0),
         price_to_nav=float(p2nav) if p2nav is not None else None,
         vintage=int(vintage or datetime.now().year),
+        commitment_year=int(commit_year or vintage or datetime.now().year),
+        entry_date=str(entry_date or "").strip() or datetime.now().isoformat()[:10],
         segment=segment or "New", allocation_status=alloc_status or "Closed",
         date_added=datetime.now().isoformat()[:10],
     )
     if edit_idx is not None and 0 <= edit_idx < len(p):
         deal["id"] = p[edit_idx]["id"]
         p[edit_idx] = deal
-        return p, nid, f"✓ Updated: {name}"
+        return p, nid, f"✓ Updated: {name}", None, None
     else:
         deal["id"] = nid
-        return p+[deal], nid+1, f"✓ Added: {name}"
+        return p+[deal], nid+1, f"✓ Added: {name}", None, None
 
 
 # ── Portfolio: populate edit form ────────────────────────────────────────────
@@ -2123,27 +2392,31 @@ def add_or_update_portfolio(_, portfolio, nid, edit_idx,
     Output("port-nav","value"), Output("port-irr","value"),
     Output("port-hold","value"), Output("port-moic","value"),
     Output("port-p2nav","value"),
-    Output("port-vintage","value"), Output("port-segment","value"),
-    Output("port-alloc-status","value"),
+    Output("port-vintage","value"), Output("port-commit-year","value"),
+    Output("port-entry-date","value"),
+    Output("port-segment","value"), Output("port-alloc-status","value"),
     Output("port-msg","children",allow_duplicate=True),
     Input("edit-port-btn","n_clicks"),
     Input("populate-port-trigger","data"),
-    State("portfolio-table","selected_rows"), State("port-store","data"),
+    State("port-selected-idx","data"),
+    State("port-store","data"),
     prevent_initial_call=True,
 )
-def populate_edit(btn_click, trigger_idx, selected, portfolio):
+def populate_edit(btn_click, trigger_idx, selected_idx, portfolio):
     ctx = callback_context
     if not portfolio:
-        return [no_update]*20
+        return [no_update]*22
     triggered = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
+
     if "populate-port-trigger" in triggered and trigger_idx is not None:
         idx = trigger_idx
-    elif selected:
-        idx = selected[0]
     else:
-        return [no_update]*20
-    if idx >= len(portfolio):
-        return [no_update]*20
+        idx = selected_idx
+        if idx is None:
+            return [no_update]*21 + ["⚠ Select a deal row first."]
+
+    if idx is None or idx >= len(portfolio):
+        return [no_update]*21 + ["⚠ No row selected — click a row in the table first."]
     d = portfolio[idx]
     return (
         idx,
@@ -2156,7 +2429,10 @@ def populate_edit(btn_click, trigger_idx, selected, portfolio):
         d.get("nav",0), round(d.get("target_irr",0)*100,2),
         d.get("hold_period",5), d.get("moic",1.0),
         d.get("price_to_nav",None),
-        d.get("vintage",2025), d.get("segment","New"),
+        d.get("vintage",2025),
+        d.get("commitment_year", d.get("vintage",2025)),
+        d.get("entry_date",""),
+        d.get("segment","New"),
         d.get("allocation_status","Closed"),
         f"📝 Editing: {d['name']} — make changes and click '+ Add Deal' to save."
     )
@@ -2168,11 +2444,12 @@ def populate_edit(btn_click, trigger_idx, selected, portfolio):
     Output("port-name","value",allow_duplicate=True),
     Output("port-manager","value",allow_duplicate=True),
     Output("port-msg","children",allow_duplicate=True),
+    Output("port-selected-idx","data",allow_duplicate=True),
     Input("clear-port-btn","n_clicks"),
     prevent_initial_call=True,
 )
 def clear_form(_):
-    return None, "", "", ""
+    return None, "", "", "", None
 
 
 # ── Portfolio: delete ────────────────────────────────────────────────────────
@@ -2180,15 +2457,17 @@ def clear_form(_):
     Output("port-store","data",allow_duplicate=True),
     Output("port-action-msg","children"),
     Input("delete-port-btn","n_clicks"),
-    State("portfolio-table","selected_rows"), State("port-store","data"),
+    State("port-selected-idx","data"),
+    State("port-store","data"),
     prevent_initial_call=True,
 )
-def delete_portfolio(_, selected, portfolio):
-    if not selected: return no_update, "Select a row first."
-    idx = selected[0]
-    if not portfolio or idx>=len(portfolio): return no_update, "Invalid selection."
-    name = portfolio[idx]["name"]
-    return [d for i,d in enumerate(portfolio) if i!=idx], f"🗑 Deleted: {name}"
+def delete_portfolio(_, selected_idx, portfolio):
+    if selected_idx is None:
+        return no_update, "Select a row first."
+    if not portfolio or selected_idx >= len(portfolio):
+        return no_update, "Invalid selection."
+    name = portfolio[selected_idx]["name"]
+    return [d for i, d in enumerate(portfolio) if i != selected_idx], f"🗑 Deleted: {name}"
 
 
 # ── Portfolio: Sync NAVs from uploaded Fund Level CF ─────────────────────────
@@ -2250,6 +2529,8 @@ def sync_nav_from_liq(_, portfolio, liq_data):
     Output("next-id","data",allow_duplicate=True),
     Output("edit-pipe-idx","data"),
     Output("pipe-msg","children"),
+    Output("pipe-selected-idx","data",allow_duplicate=True),
+    Output("pipe-form-mode","children",allow_duplicate=True),
     Input("add-pipe-btn","n_clicks"),
     State("pipe-store","data"), State("next-id","data"),
     State("edit-pipe-idx","data"),
@@ -2262,7 +2543,7 @@ def sync_nav_from_liq(_, portfolio, liq_data):
 )
 def add_pipeline(_, pipeline, nid, edit_pipe_idx, name, strategy, stage_deal, sector,
                   region, size, irr, pipe_stage, priority):
-    if not name: return no_update, no_update, no_update, "⚠ Enter a deal name."
+    if not name: return no_update, no_update, no_update, "⚠ Enter a deal name.", no_update, ""
     p = pipeline or []
     deal = dict(id=nid, name=name, strategy=strategy, stage_deal=stage_deal,
                 sector=sector, region=region, size=float(size or 0),
@@ -2271,10 +2552,10 @@ def add_pipeline(_, pipeline, nid, edit_pipe_idx, name, strategy, stage_deal, se
     if edit_pipe_idx is not None and 0 <= edit_pipe_idx < len(p):
         deal["id"] = p[edit_pipe_idx]["id"]
         p[edit_pipe_idx] = deal
-        return p, nid, None, f"✓ Updated: {name}"
+        return p, nid, None, f"✓ Updated: {name}", None, ""
     else:
         deal["id"] = nid
-        return p+[deal], nid+1, None, f"✓ Added pipeline: {name}"
+        return p+[deal], nid+1, None, f"✓ Added pipeline: {name}", None, ""
 
 
 # ── Pipeline: populate edit form ─────────────────────────────────────────────
@@ -2286,24 +2567,26 @@ def add_pipeline(_, pipeline, nid, edit_pipe_idx, name, strategy, stage_deal, se
     Output("pipe-irr","value"), Output("pipe-pipe-stage","value"),
     Output("pipe-priority","value"),
     Output("pipe-msg","children",allow_duplicate=True),
+    Output("pipe-form-mode","children"),
     Input("edit-pipe-btn","n_clicks"),
     Input("populate-pipe-trigger","data"),
-    State("pipeline-table","selected_rows"), State("pipe-store","data"),
+    State("pipe-selected-idx","data"),
+    State("pipe-store","data"),
     prevent_initial_call=True,
 )
-def populate_pipe_edit(btn_click, trigger_idx, selected, pipeline):
+def populate_pipe_edit(btn_click, trigger_idx, selected_idx, pipeline):
     ctx = callback_context
     if not pipeline:
-        return [no_update]*11
+        return [no_update]*12
     triggered = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
     if "populate-pipe-trigger" in triggered and trigger_idx is not None:
         idx = trigger_idx
-    elif selected:
-        idx = selected[0]
     else:
-        return [no_update]*11
+        idx = selected_idx
+        if idx is None:
+            return [no_update]*11 + ["⚠ Select a deal row first."]
     if idx >= len(pipeline):
-        return [no_update]*11
+        return [no_update]*12
     d = pipeline[idx]
     return (
         idx,
@@ -2313,7 +2596,22 @@ def populate_pipe_edit(btn_click, trigger_idx, selected, pipeline):
         round(d.get("target_irr",0)*100, 2),
         d.get("pipeline_stage","Screening"), d.get("priority","Medium"),
         f"📝 Editing: {d['name']} — make changes and click '+ Add' to save.",
+        f"✏️ Edit mode — {d['name']}",
     )
+
+
+# ── Pipeline: clear form ──────────────────────────────────────────────────────
+@app.callback(
+    Output("edit-pipe-idx","data",allow_duplicate=True),
+    Output("pipe-name","value",allow_duplicate=True),
+    Output("pipe-msg","children",allow_duplicate=True),
+    Output("pipe-selected-idx","data",allow_duplicate=True),
+    Output("pipe-form-mode","children",allow_duplicate=True),
+    Input("clear-pipe-btn","n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_pipe_form(_):
+    return None, "", "", None, ""
 
 
 # ── Pipeline: promote → portfolio ────────────────────────────────────────────
@@ -2323,16 +2621,15 @@ def populate_pipe_edit(btn_click, trigger_idx, selected, pipeline):
     Output("next-id","data",allow_duplicate=True),
     Output("pipe-action-msg","children"),
     Input("promote-pipe-btn","n_clicks"),
-    State("pipeline-table","selected_rows"),
+    State("pipe-selected-idx","data"),
     State("pipe-store","data"), State("port-store","data"), State("next-id","data"),
     prevent_initial_call=True,
 )
-def promote_pipeline(_, selected, pipeline, portfolio, nid):
-    if not selected: return no_update, no_update, no_update, "Select a row first."
-    idx = selected[0]
+def promote_pipeline(_, selected_idx, pipeline, portfolio, nid):
+    if selected_idx is None: return no_update, no_update, no_update, "Select a row first."
     pipeline = pipeline or []
-    if idx>=len(pipeline): return no_update, no_update, no_update, "Invalid."
-    p = pipeline[idx]
+    if selected_idx >= len(pipeline): return no_update, no_update, no_update, "Invalid."
+    p = pipeline[selected_idx]
     size = float(p.get("size",0))
     promoted = dict(id=nid, name=p["name"],
                     manager="", strategy=p.get("strategy",""),
@@ -2344,7 +2641,7 @@ def promote_pipeline(_, selected, pipeline, portfolio, nid):
                     hold_period=5.0, moic=1.75, vintage=datetime.now().year,
                     segment="New", allocation_status="Pending Close",
                     date_added=datetime.now().isoformat()[:10])
-    new_pipe = [d for i,d in enumerate(pipeline) if i!=idx]
+    new_pipe = [d for i,d in enumerate(pipeline) if i!=selected_idx]
     return new_pipe, (portfolio or [])+[promoted], nid+1, f"✅ Promoted: {p['name']}"
 
 
@@ -2353,16 +2650,16 @@ def promote_pipeline(_, selected, pipeline, portfolio, nid):
     Output("pipe-store","data",allow_duplicate=True),
     Output("pipe-action-msg","children",allow_duplicate=True),
     Input("delete-pipe-btn","n_clicks"),
-    State("pipeline-table","selected_rows"), State("pipe-store","data"),
+    State("pipe-selected-idx","data"),
+    State("pipe-store","data"),
     prevent_initial_call=True,
 )
-def delete_pipeline(_, selected, pipeline):
-    if not selected: return no_update, "Select a row first."
-    idx = selected[0]
+def delete_pipeline(_, selected_idx, pipeline):
+    if selected_idx is None: return no_update, "Select a row first."
     pipeline = pipeline or []
-    if idx>=len(pipeline): return no_update, "Invalid."
-    name = pipeline[idx]["name"]
-    return [d for i,d in enumerate(pipeline) if i!=idx], f"🗑 Deleted: {name}"
+    if selected_idx >= len(pipeline): return no_update, "Invalid."
+    name = pipeline[selected_idx]["name"]
+    return [d for i, d in enumerate(pipeline) if i != selected_idx], f"🗑 Deleted: {name}"
 
 
 # ── Placeholder: add ─────────────────────────────────────────────────────────
@@ -2371,6 +2668,8 @@ def delete_pipeline(_, selected, pipeline):
     Output("next-id","data",allow_duplicate=True),
     Output("edit-ph-idx","data"),
     Output("ph-msg","children"),
+    Output("ph-selected-idx","data",allow_duplicate=True),
+    Output("ph-form-mode","children",allow_duplicate=True),
     Input("add-ph-btn","n_clicks"),
     State("ph-store","data"), State("next-id","data"),
     State("edit-ph-idx","data"),
@@ -2381,7 +2680,7 @@ def delete_pipeline(_, selected, pipeline):
     prevent_initial_call=True,
 )
 def add_placeholder(_, placeholders, nid, edit_ph_idx, name, strategy, dtype, region, size, irr, month):
-    if not name: return no_update, no_update, no_update, "⚠ Enter a name."
+    if not name: return no_update, no_update, no_update, "⚠ Enter a name.", no_update, ""
     p = placeholders or []
     ph = dict(id=nid, name=name, strategy=strategy, deal_type=dtype,
               region=region, size=float(size or 0), target_irr=float(irr or 0)/100,
@@ -2389,10 +2688,10 @@ def add_placeholder(_, placeholders, nid, edit_ph_idx, name, strategy, dtype, re
     if edit_ph_idx is not None and 0 <= edit_ph_idx < len(p):
         ph["id"] = p[edit_ph_idx]["id"]
         p[edit_ph_idx] = ph
-        return p, nid, None, f"✓ Updated: {name}"
+        return p, nid, None, f"✓ Updated: {name}", None, ""
     else:
         ph["id"] = nid
-        return p+[ph], nid+1, None, f"✓ Added: {name}"
+        return p+[ph], nid+1, None, f"✓ Added: {name}", None, ""
 
 
 # ── Placeholder: populate edit form ──────────────────────────────────────────
@@ -2403,16 +2702,19 @@ def add_placeholder(_, placeholders, nid, edit_ph_idx, name, strategy, dtype, re
     Output("ph-size","value"), Output("ph-irr","value"),
     Output("ph-month","value"),
     Output("ph-msg","children",allow_duplicate=True),
+    Output("ph-form-mode","children"),
     Input("edit-ph-btn","n_clicks"),
-    State("ph-table","selected_rows"), State("ph-store","data"),
+    State("ph-selected-idx","data"), State("ph-store","data"),
     prevent_initial_call=True,
 )
-def populate_ph_edit(_, selected, placeholders):
-    if not selected or not placeholders:
-        return [no_update]*9
-    idx = selected[0]
+def populate_ph_edit(_, selected_idx, placeholders):
+    if not placeholders:
+        return [no_update]*10
+    if selected_idx is None:
+        return [no_update]*9 + ["⚠ Select a row first."]
+    idx = selected_idx
     if idx >= len(placeholders):
-        return [no_update]*9
+        return [no_update]*10
     d = placeholders[idx]
     return (
         idx,
@@ -2421,7 +2723,22 @@ def populate_ph_edit(_, selected, placeholders):
         d.get("size",0), round(d.get("target_irr",0)*100, 2),
         d.get("expected_month",0),
         f"📝 Editing: {d['name']} — make changes and click '+ Add' to save.",
+        f"✏️ Edit mode — {d['name']}",
     )
+
+
+# ── Placeholder: clear form ───────────────────────────────────────────────────
+@app.callback(
+    Output("edit-ph-idx","data",allow_duplicate=True),
+    Output("ph-name","value",allow_duplicate=True),
+    Output("ph-msg","children",allow_duplicate=True),
+    Output("ph-selected-idx","data",allow_duplicate=True),
+    Output("ph-form-mode","children",allow_duplicate=True),
+    Input("clear-ph-btn","n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_ph_form(_):
+    return None, "", "", None, ""
 
 
 # ── Placeholder: delete ──────────────────────────────────────────────────────
@@ -2429,16 +2746,15 @@ def populate_ph_edit(_, selected, placeholders):
     Output("ph-store","data",allow_duplicate=True),
     Output("ph-action-msg","children"),
     Input("delete-ph-btn","n_clicks"),
-    State("ph-table","selected_rows"), State("ph-store","data"),
+    State("ph-selected-idx","data"), State("ph-store","data"),
     prevent_initial_call=True,
 )
-def delete_placeholder(_, selected, placeholders):
-    if not selected: return no_update, "Select a row first."
-    idx = selected[0]
+def delete_placeholder(_, selected_idx, placeholders):
+    if selected_idx is None: return no_update, "Select a row first."
     placeholders = placeholders or []
-    if idx>=len(placeholders): return no_update, "Invalid."
-    name = placeholders[idx]["name"]
-    return [d for i,d in enumerate(placeholders) if i!=idx], f"🗑 Deleted: {name}"
+    if selected_idx >= len(placeholders): return no_update, "Invalid."
+    name = placeholders[selected_idx]["name"]
+    return [d for i,d in enumerate(placeholders) if i!=selected_idx], f"🗑 Deleted: {name}"
 
 
 # ── Pro Forma: route edit to Portfolio or Pipeline tab ────────────────────────
@@ -2479,7 +2795,7 @@ def proforma_edit_route(port_click, pipe_click, selected, rows, portfolio, pipel
         return "pipeline", no_update, pipe_idx, ""
 
 
-# ── Settings: save ───────────────────────────────────────────────────────────
+# ── Settings: save (fund params, identity, allocation targets only) ───────────
 @app.callback(
     Output("cfg-store","data",allow_duplicate=True),
     Output("cfg-msg","children"),
@@ -2501,15 +2817,6 @@ def proforma_edit_route(port_click, pipe_click, selected, rows, portfolio, pipel
     State("cfg-tgt-asia","value"),State("cfg-tgt-global","value"),
     State("cfg-tgt-irr-sec","value"), State("cfg-tgt-irr-ci","value"),
     State("cfg-tgt-moic","value"),
-    # Mandate limits
-    State("cfg-lim-deal","value"),    State("cfg-lim-manager","value"),
-    State("cfg-lim-ci","value"),      State("cfg-lim-sector","value"),
-    State("cfg-lim-region","value"),  State("cfg-lim-unfunded","value"),
-    State("cfg-lim-mindeal","value"),
-    # Additional investment restrictions
-    State("cfg-lim-leverage","value"), State("cfg-lim-primaries","value"),
-    State("cfg-lim-non-sec","value"),  State("cfg-lim-non-naeur","value"),
-    State("cfg-lim-vintage","value"),
     State("cfg-store","data"),
     prevent_initial_call=True,
 )
@@ -2518,8 +2825,6 @@ def save_settings(_, dist, cy, hurdle, carry, loss, liq, hold, dep_yrs, deals_py
                    fund_name, fund_strategy, vehicle_type, domicile, fund_ccy, fund_vintage,
                    tgt_sec, tgt_ci, tgt_na, tgt_eur, tgt_asia, tgt_global,
                    tgt_irr_sec, tgt_irr_ci, tgt_moic,
-                   lim_deal, lim_manager, lim_ci, lim_sector, lim_region, lim_unfunded, lim_mindeal,
-                   lim_leverage, lim_primaries, lim_non_sec, lim_non_naeur, lim_vintage,
                    config):
     cfg = dict(config or DEFAULT_CONFIG)
     def f(v, k): return float(v) if v is not None else float(cfg.get(k, 0))
@@ -2555,22 +2860,70 @@ def save_settings(_, dist, cy, hurdle, carry, loss, liq, hold, dep_yrs, deals_py
         "target_irr_secondary":  f(tgt_irr_sec,"target_irr_secondary"),
         "target_irr_coinvest":   f(tgt_irr_ci, "target_irr_coinvest"),
         "target_moic":           f(tgt_moic,   "target_moic"),
-        # Mandate limits
-        "limit_single_deal_pct":    f(lim_deal,    "limit_single_deal_pct"),
-        "limit_single_manager_pct": f(lim_manager, "limit_single_manager_pct"),
-        "limit_coinvest_max_pct":   f(lim_ci,      "limit_coinvest_max_pct"),
-        "limit_single_sector_pct":  f(lim_sector,  "limit_single_sector_pct"),
-        "limit_single_region_pct":  f(lim_region,  "limit_single_region_pct"),
-        "limit_unfunded_pct":       f(lim_unfunded,"limit_unfunded_pct"),
-        "min_deals":                int(lim_mindeal or cfg.get("min_deals", 10)),
-        # Additional investment restrictions
-        "limit_leverage_pct":       f(lim_leverage,   "limit_leverage_pct"),
-        "limit_primaries_pct":      f(lim_primaries,  "limit_primaries_pct"),
-        "limit_non_secondary_pct":  f(lim_non_sec,    "limit_non_secondary_pct"),
-        "limit_non_na_europe_pct":  f(lim_non_naeur,  "limit_non_na_europe_pct"),
-        "limit_single_vintage_pct": f(lim_vintage,    "limit_single_vintage_pct"),
     })
-    return cfg, "✓ All settings saved"
+    return cfg, "✓ Settings saved"
+
+
+# ── Restrictions: add blank row to Legal table ────────────────────────────────
+@app.callback(
+    Output("cfg-legal-tbl","data"),
+    Input("btn-add-legal-row","n_clicks"),
+    State("cfg-legal-tbl","data"),
+    prevent_initial_call=True,
+)
+def add_legal_row(_, rows):
+    rows = list(rows or [])
+    rows.append({"label": "New Restriction", "metric_key": "max_deal_pct",
+                 "limit": 100.0, "higher_is_bad": True, "fmt": "%"})
+    return rows
+
+
+# ── Restrictions: add blank row to Investment Targets table ───────────────────
+@app.callback(
+    Output("cfg-targets-tbl","data"),
+    Input("btn-add-target-row","n_clicks"),
+    State("cfg-targets-tbl","data"),
+    prevent_initial_call=True,
+)
+def add_target_row(_, rows):
+    rows = list(rows or [])
+    rows.append({"label": "New Target", "metric_key": "max_vintage_pct",
+                 "limit": 35.0, "higher_is_bad": True, "fmt": "%"})
+    return rows
+
+
+# ── Restrictions: save both tables to cfg-store ───────────────────────────────
+@app.callback(
+    Output("cfg-store","data",allow_duplicate=True),
+    Output("restrictions-save-msg","children"),
+    Input("btn-save-restrictions","n_clicks"),
+    State("cfg-legal-tbl","data"),
+    State("cfg-targets-tbl","data"),
+    State("cfg-store","data"),
+    prevent_initial_call=True,
+)
+def save_restrictions(_, legal_rows, target_rows, config):
+    cfg = dict(config or DEFAULT_CONFIG)
+
+    def clean(rows):
+        out = []
+        for r in (rows or []):
+            try:
+                out.append({
+                    "label":         str(r.get("label","")).strip() or "—",
+                    "metric_key":    str(r.get("metric_key","")).strip(),
+                    "limit":         float(r.get("limit", 0) or 0),
+                    "higher_is_bad": str(r.get("higher_is_bad","True")).strip() not in ("False","false","0"),
+                    "fmt":           str(r.get("fmt","%")).strip() or "%",
+                })
+            except Exception:
+                pass
+        return out
+
+    cfg["legal_restrictions"]  = clean(legal_rows)
+    cfg["investment_targets"]  = clean(target_rows)
+    n = len(cfg["legal_restrictions"]) + len(cfg["investment_targets"])
+    return cfg, f"✅ Saved {n} restrictions / targets"
 
 
 # ── Monte Carlo TWR ──────────────────────────────────────────────────────────
@@ -2697,7 +3050,7 @@ def update_analytics(scope, portfolio, pipeline, placeholders, config):
                 region=p.get("region","Other"), sector=p.get("sector","Other"),
                 vintage=datetime.now().year,
                 deal_type=p.get("deal_type","Secondary"),
-                _pool="Pro Forma",
+                _pool="Deployment Plan",
             ))
 
     if not all_deals:
@@ -2705,7 +3058,7 @@ def update_analytics(scope, portfolio, pipeline, placeholders, config):
         return html.Div(), empty
 
     total_nav = sum(d.get("nav",0) for d in all_deals)
-    scope_labels = {"current":"Current Portfolio","pipeline":"+ Pipeline","proforma":"+ Pipeline + Future Deals"}
+    scope_labels = {"current":"Current Portfolio","pipeline":"+ Pipeline","proforma":"+ Pipeline + Deployment Plan"}
     scope_label  = scope_labels.get(scope,"")
 
     # Scope KPI row
@@ -2714,7 +3067,7 @@ def update_analytics(scope, portfolio, pipeline, placeholders, config):
         pk = d.get("_pool","")
         pool_nav[pk] = pool_nav.get(pk,0)+d.get("nav",0)
 
-    pool_colors = {"Current Portfolio":C["blue"],"Pipeline":C["purple"],"Pro Forma":C["pink"]}
+    pool_colors = {"Current Portfolio":C["blue"],"Pipeline":C["purple"],"Deployment Plan":C["pink"]}
     kpi_items = [
         kpi("Total Scope NAV", fmt_m(total_nav), scope_label, C["green"]),
     ] + [
@@ -2817,7 +3170,7 @@ def update_analytics(scope, portfolio, pipeline, placeholders, config):
     # Scatter: IRR vs NAV by pool
     tgt = float(config.get("target_net_twr",0.13))*100
     fig_scatter = go.Figure()
-    pool_order = ["Current Portfolio","Pipeline","Pro Forma"]
+    pool_order = ["Current Portfolio","Pipeline","Deployment Plan"]
     p_colors   = [C["blue"],C["purple"],C["pink"]]
     for pool, pcolor in zip(pool_order, p_colors):
         ds = [d for d in all_deals if d.get("_pool")==pool]
@@ -2878,16 +3231,19 @@ def update_analytics(scope, portfolio, pipeline, placeholders, config):
     return kpi_strip, charts
 
 
-# ── Reflect config back to header on load ────────────────────────────────────
+# ── Reflect config back to header (only on settings save, not every store change) ──
 @app.callback(
     Output("hdr-fund-size","value",allow_duplicate=True),
     Output("hdr-dry-powder","value",allow_duplicate=True),
     Output("hdr-twr","value",allow_duplicate=True),
     Output("hdr-fee","value",allow_duplicate=True),
-    Input("cfg-store","data"),
+    Input("save-cfg-btn","n_clicks"),
+    State("cfg-store","data"),
     prevent_initial_call=True,
 )
-def reflect_cfg(config):
+def reflect_cfg(_, config):
+    if not config:
+        return no_update, no_update, no_update, no_update
     return (config.get("fund_size"),
             config.get("dry_powder"),
             round(float(config.get("target_net_twr",0.13))*100,2),
@@ -3371,13 +3727,23 @@ def refresh_discounts(_, store):
     Input("next-id","data"),
 )
 def persist(portfolio, pipeline, placeholders, config, next_id):
-    save_data(portfolio, pipeline, placeholders, config, next_id)
-    return f"Last saved: {datetime.now().strftime('%H:%M:%S')}"
+    try:
+        save_data(portfolio, pipeline, placeholders, config, next_id)
+        n_deals = len(portfolio or [])
+        return html.Span([
+            html.Span("💾 ", style=dict(color=C["green"])),
+            html.Span(f"Saved {n_deals} deal{'s' if n_deals!=1 else ''} · {datetime.now().strftime('%H:%M:%S')}",
+                      style=dict(color=C["muted"], fontSize=11, fontFamily=C["mono"])),
+            html.Span(f" → {DATA_FILE}", style=dict(color=C["dim"], fontSize=10, fontFamily=C["mono"])),
+        ])
+    except Exception as e:
+        return html.Span(f"❌ Save failed: {e}",
+                         style=dict(color=C["red"], fontSize=11, fontFamily=C["mono"]))
 
 
 if __name__ == "__main__":
     print("\n" + "="*70)
-    print("HORIZON PORTFOLIO TOOL v75 — PE Secondaries & Co-Investment")
+    print("HORIZON PORTFOLIO TOOL v88 — PE Secondaries & Co-Investment")
     print("="*70)
     print(f"\n✅  http://localhost:8060")
     print("\nTabs: Portfolio | Pipeline | Pro Forma | Analytics | Segments & TWR |")
